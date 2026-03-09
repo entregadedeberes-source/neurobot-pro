@@ -1,0 +1,46 @@
+from flask import Flask, render_template, request, redirect
+from engine import BettingEngine
+from database_manager import DatabaseManager
+from ai_refinement import AIRefinement
+import os
+
+app = Flask(__name__)
+db = DatabaseManager()
+ai = AIRefinement()
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    res = None
+    if request.method == 'POST':
+        p1, px, p2, o25 = BettingEngine.predict_match(float(request.form['gl']), float(request.form['gv']))
+        conf = ai.predict_reliability(p1, float(request.form['cl']), 0.05)
+        res = {'p1': p1, 'px': px, 'p2': p2, 'o25': o25, 'conf': conf}
+        
+        # Auto-guardado si tiene valor alto
+        if (p1 * float(request.form['cl'])) - 1 > 0.05:
+            db.save_prediction({
+                'liga': request.form['liga'], 'local': request.form['local'], 
+                'visitante': request.form['visitante'], 'prob': p1, 
+                'cuota': float(request.form['cl']), 'ev': (p1 * float(request.form['cl'])) - 1,
+                'mercado': 'Gana Local'
+            })
+            
+    return render_template('index.html', res=res)
+
+@app.route('/stats')
+def stats():
+    with sqlite3.connect('neurobot.db') as conn:
+        conn.row_factory = sqlite3.Row
+        pendientes = conn.execute("SELECT * FROM pronosticos WHERE resultado_real = 'PENDIENTE'").fetchall()
+        terminados = pd.read_sql_query("SELECT * FROM pronosticos WHERE resultado_real != 'PENDIENTE'", conn)
+    
+    yield_p = (terminados['ganancia_neta'].sum() / len(terminados)) * 100 if not terminados.empty else 0
+    return render_template('stats.html', pendientes=pendientes, yield_p=yield_p)
+
+@app.route('/update/<int:p_id>/<status>')
+def update(p_id, status):
+    db.update_result(p_id, status)
+    return redirect('/stats')
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
